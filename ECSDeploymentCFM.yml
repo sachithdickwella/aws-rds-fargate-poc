@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  RepositoryLocationParameter:
+    Type: String
+    Default: https://sachith_dickwella@bitbucket.org/cloudlock/traviard-main-repo.git
+    ConstraintDescription: Code build source repository location parameter. Preferably, should be a code
+      repository URL.
+  RepositoryArtifactsPath:
+    Type: String
+    Default: "Snapshots"
+    ConstraintDescription: Development artifact path in the S3 bucket.
+
+Resources:
+  CloudBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: CloudBuildPipeline
+      Description: Cloud repository's build pipeline which deploy artifacts to the maven repository.
+      Artifacts:
+        Type: S3
+        Location: !Ref MavenArtifactBucket
+        OverrideArtifactName: true
+        Name: "/"
+        NamespaceType: BUILD_ID
+        Path: !Ref RepositoryArtifactsPath
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        PrivilegedMode: true
+      ServiceRole: !Ref CodeBuildAccessRole
+      Source:
+        Auth:
+          Type: OAUTH
+        Type: BITBUCKET
+        Location: !Ref RepositoryLocationParameter
+        GitCloneDepth: 1
+        ReportBuildStatus: true
+        GitSubmodulesConfig:
+          FetchSubmodules: true
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                java: corretto19
+              commands:
+                - wget https://download.java.net/java/GA/jdk14/076bab302c7b4508975440c56f6cc26a/36/GPL/openjdk-14_linux-x64_bin.tar.gz
+                - tar -xvf openjdk-14_linux-x64_bin.tar.gz --directory /root/ jdk-14
+                - rm -f openjdk-14_linux-x64_bin.tar.gz
+                - export JAVA_HOME=/root/jdk-14
+            pre_build:
+              commands:
+                - mvn -version
+                - cd source/traviard-cloud
+            build:
+              commands:
+                - echo "Build started on `date`."
+                - mvn -T 1.5C install
+            post_build:
+              commands:
+                - echo "Entered the post_build phase..."
+                - echo "Build completed on `date`."
+          artifacts:
+            files:
+              - "**/*.jar"
+            discard-paths: yes
+          cache:
+            paths:
+              - "/root/.m2/**/*"
+      BadgeEnabled: false
+      Triggers:
+        Webhook: true
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: PUSH,PULL_REQUEST_MERGED
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref CodeBuildLogGroup
+          Status: ENABLED
+
+  CodeBuildAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - 'sts:AssumeRole'
+      Description: IAM role for the CodeBuid project to access resources.
+      Policies:
+        - PolicyName: CodeBuildAccessRolePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - Fn::Join:
+                      - ""
+                      - - !GetAtt [MavenArtifactBucket, Arn]
+                  - Fn::Join:
+                      - ""
+                      - - !GetAtt [MavenArtifactBucket, Arn]
+                        - "/*"
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetBucketAcl"
+                  - "s3:GetBucketLocation"
+
+              - Effect: Allow
+                Resource:
+                  - Fn::Join:
+                      - ""
+                      - - !GetAtt [CodeBuildLogGroup, Arn]
+                  - Fn::Join:
+                      - ""
+                      - - !GetAtt [CodeBuildLogGroup, Arn]
+                        - "/*"
+                Action:
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+
+  CodeBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "CodeBuildLogGroup"
+      RetentionInDays: 30
+
+  MavenArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      BucketName: !Sub 'traviard-maven-artifacts-${AWS::Region}'
+      AccessControl: Private # Default

@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: aws-fargate-paf-poc
+
+  data:
+    jpa:
+      repositories:
+        enabled: true
+
+  jpa:
+    database: mysql
+    hibernate:
+      ddl-auto: validate
+      naming:
+        implicit-strategy: org.hibernate.boot.model.naming.ImplicitNamingStrategyLegacyJpaImpl
+    open-in-view: false
+
+  datasource:
+    username: admin
+    password: 1912Fy#727bravo
+    tomcat:
+      max-age: 20000
+      max-active: 20
+    url: jdbc:mysql://db-1.cojinynmpiqm.ap-southeast-2.rds.amazonaws.com:3306/auspost_db?autoReconnect=true&useSSL=false&allowPublicKeyRetrieval=true
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+server:
+  port: 8090
+  tomcat:
+    uri-encoding: UTF-8

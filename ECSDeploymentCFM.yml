@@ -3,13 +3,21 @@ AWSTemplateFormatVersion: 2010-09-09
 Parameters:
   RepositoryLocationParameter:
     Type: String
-    Default: https://sachith_dickwella@bitbucket.org/cloudlock/traviard-main-repo.git
-    ConstraintDescription: Code build source repository location parameter. Preferably, should be a code
-      repository URL.
+    Default: https://github.com/sachithdickwella/aws-rds-fargate-poc.git
+    ConstraintDescription: Code build source repository location parameter. Preferably, should be a code repository URL.
   RepositoryArtifactsPath:
     Type: String
     Default: "Snapshots"
     ConstraintDescription: Development artifact path in the S3 bucket.
+  AWSDefaultRegion:
+    Type: String
+    Default: !Ref AWS::Region
+  DockerImageTag:
+    Type: String
+    Default: latest
+  DockerImageRepoName:
+    Type: String
+    Default: aws-fargate-poc
 
 Resources:
   CloudBuild:
@@ -29,11 +37,25 @@ Resources:
         ComputeType: BUILD_GENERAL1_SMALL
         Image: aws/codebuild/standard:4.0
         PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWSDefaultRegion
+          - Name: AWS_ACCOUNT_ID
+            Type: PLAINTEXT
+            Value: !Ref AWS::AccountId
+          - Name: IMAGE_TAG
+            Type: PLAINTEXT
+            Value: !Ref DockerImageTag
+          - Name: IMAGE_REPO_NAME
+            Type: PLAINTEXT
+            Value: !Ref DockerImageRepoName
       ServiceRole: !Ref CodeBuildAccessRole
+      EncryptionKey: !Ref CodeBuildRSASigningKey
       Source:
         Auth:
           Type: OAUTH
-        Type: BITBUCKET
+        Type: GITHUB
         Location: !Ref RepositoryLocationParameter
         GitCloneDepth: 1
         ReportBuildStatus: true
@@ -43,25 +65,25 @@ Resources:
           version: 0.2
           phases:
             install:
-              runtime-versions:
-                java: corretto19
-              commands:
-                - wget https://download.java.net/java/GA/jdk14/076bab302c7b4508975440c56f6cc26a/36/GPL/openjdk-14_linux-x64_bin.tar.gz
-                - tar -xvf openjdk-14_linux-x64_bin.tar.gz --directory /root/ jdk-14
-                - rm -f openjdk-14_linux-x64_bin.tar.gz
-                - export JAVA_HOME=/root/jdk-14
+              on-failure: ABORT
+              runtime-versions: java: corretto19
             pre_build:
               commands:
                 - mvn -version
-                - cd source/traviard-cloud
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
             build:
               commands:
-                - echo "Build started on `date`."
+                - echo "Build started on `date`"
                 - mvn -T 1.5C install
+              finally:
+                - echo Building the Docker image...          
+                - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
+                - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
             post_build:
               commands:
-                - echo "Entered the post_build phase..."
-                - echo "Build completed on `date`."
+                - echo Build completed on `date`
+                - echo Pushing the Docker image...
+                - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
           artifacts:
             files:
               - "**/*.jar"
@@ -92,7 +114,7 @@ Resources:
                 - "codebuild.amazonaws.com"
             Action:
               - 'sts:AssumeRole'
-      Description: IAM role for the CodeBuid project to access resources.
+      Description: IAM role for the CodeBuild project to access resources.
       Policies:
         - PolicyName: CodeBuildAccessRolePolicy
           PolicyDocument:
@@ -102,10 +124,10 @@ Resources:
                 Resource:
                   - Fn::Join:
                       - ""
-                      - - !GetAtt [MavenArtifactBucket, Arn]
+                      - - !GetAtt [ MavenArtifactBucket, Arn ]
                   - Fn::Join:
                       - ""
-                      - - !GetAtt [MavenArtifactBucket, Arn]
+                      - - !GetAtt [ MavenArtifactBucket, Arn ]
                         - "/*"
                 Action:
                   - "s3:PutObject"
@@ -118,14 +140,59 @@ Resources:
                 Resource:
                   - Fn::Join:
                       - ""
-                      - - !GetAtt [CodeBuildLogGroup, Arn]
+                      - - !GetAtt [ CodeBuildLogGroup, Arn ]
                   - Fn::Join:
                       - ""
-                      - - !GetAtt [CodeBuildLogGroup, Arn]
+                      - - !GetAtt [ CodeBuildLogGroup, Arn ]
                         - "/*"
                 Action:
                   - "logs:CreateLogStream"
                   - "logs:PutLogEvents"
+
+  CodeBuildRSASigningKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: RSA-2048 asymmetric KMS key for signing and verification.
+      Enabled: True
+      KeySpec: RSA_2048
+      KeyUsage: SIGN_VERIFY
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-default-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt [ CodeBuildAccessRole, Arn ]
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: Allow administration of the key
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt [ CodeBuildAccessRole, Arn ]
+            Action:
+              - 'kms:Create*'
+              - 'kms:Describe*'
+              - 'kms:Enable*'
+              - 'kms:List*'
+              - 'kms:Put*'
+              - 'kms:Update*'
+              - 'kms:Revoke*'
+              - 'kms:Disable*'
+              - 'kms:Get*'
+              - 'kms:Delete*'
+              - 'kms:ScheduleKeyDeletion'
+              - 'kms:CancelKeyDeletion'
+            Resource: '*'
+          - Sid: Allow use of the key
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt [ CodeBuildAccessRole, Arn ]
+            Action:
+              - 'kms:Sign'
+              - 'kms:Verify'
+              - 'kms:DescribeKey'
+            Resource: '*'
 
   CodeBuildLogGroup:
     Type: AWS::Logs::LogGroup
@@ -140,5 +207,5 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
-      BucketName: !Sub 'traviard-maven-artifacts-${AWS::Region}'
+      BucketName: !Sub 'maven-artifacts-${AWS::Region}'
       AccessControl: Private # Default

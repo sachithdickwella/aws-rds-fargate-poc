@@ -24,6 +24,7 @@ hs_err_pid*
 
 # IDE related ignores.
 .idea/
+.vscode/
 *.iml
 
 # Project related ignores.

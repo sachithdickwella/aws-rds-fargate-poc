@@ -94,7 +94,8 @@ Resources:
           phases:
             install:
               on-failure: ABORT
-              runtime-versions: java: corretto19
+              runtime-versions: 
+                java: corretto19
             pre_build:
               commands:
                 - mvn -version
@@ -119,6 +120,7 @@ Resources:
           cache:
             paths:
               - "/root/.m2/**/*"
+      SourceVersion: refs/heads/develop
       BadgeEnabled: false
       Triggers:
         Webhook: true

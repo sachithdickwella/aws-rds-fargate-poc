@@ -9,19 +9,46 @@ Parameters:
     Type: String
     Default: "Snapshots"
     ConstraintDescription: Development artifact path in the S3 bucket.
-  AWSDefaultRegion:
-    Type: String
-    Default: !Ref AWS::Region
   DockerImageTag:
     Type: String
-    Default: latest
+    Default: 'latest'
   DockerImageRepoName:
     Type: String
-    Default: aws-fargate-poc
+    Default: 'aws-fargate-poc'
+  CurrentUserName:
+    Type: String
+  GithubPersonalAccessToken:
+    Type: String
 
 Resources:
+  PersonalAccessToken:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: MyGithubPersonalAccessToken
+      SecretString: !Ref GithubPersonalAccessToken
+      Tags:
+        - Key: Owner
+          Value: 'Sachith Dickwella'
+        - Key: Email
+          Value: sachith_prasanna@live.com
+
+  GitHubSourceCredential:
+    Type: AWS::CodeBuild::SourceCredential
+    DependsOn: PersonalAccessToken
+    Properties:
+      AuthType: PERSONAL_ACCESS_TOKEN
+      ServerType: GITHUB
+      Token: '{{resolve:secretsmanager:MyGithubPersonalAccessToken:SecretString}}'
+
   CloudBuild:
     Type: AWS::CodeBuild::Project
+    DependsOn:
+      - ECRImageRepository
+      - CodeBuildRSASigningKey
+      - MavenArtifactBucket
+      - CodeBuildLogGroup
+      - CodeBuildAccessRole
+      - GitHubSourceCredential
     Properties:
       Name: CloudBuildPipeline
       Description: Cloud repository's build pipeline which deploy artifacts to the maven repository.
@@ -35,12 +62,12 @@ Resources:
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/standard:4.0
+        Image: aws/codebuild/standard:6.0
         PrivilegedMode: true
         EnvironmentVariables:
           - Name: AWS_DEFAULT_REGION
             Type: PLAINTEXT
-            Value: !Ref AWSDefaultRegion
+            Value: !Ref AWS::Region
           - Name: AWS_ACCOUNT_ID
             Type: PLAINTEXT
             Value: !Ref AWS::AccountId
@@ -55,6 +82,7 @@ Resources:
       Source:
         Auth:
           Type: OAUTH
+          Resource: !Ref GitHubSourceCredential
         Type: GITHUB
         Location: !Ref RepositoryLocationParameter
         GitCloneDepth: 1
@@ -104,6 +132,9 @@ Resources:
 
   CodeBuildAccessRole:
     Type: AWS::IAM::Role
+    DependsOn:
+      - MavenArtifactBucket
+      - CodeBuildLogGroup
     Properties:
       AssumeRolePolicyDocument:
         Version: 2012-10-17
@@ -114,7 +145,7 @@ Resources:
                 - "codebuild.amazonaws.com"
             Action:
               - 'sts:AssumeRole'
-      Description: IAM role for the CodeBuild project to access resources.
+      Description: IAM role for the CodeBuild,  project to access resources.
       Policies:
         - PolicyName: CodeBuildAccessRolePolicy
           PolicyDocument:
@@ -163,13 +194,14 @@ Resources:
           - Sid: Enable IAM User Permissions
             Effect: Allow
             Principal:
-              AWS: !GetAtt [ CodeBuildAccessRole, Arn ]
+              AWS:
+                - !Join ['', [ 'arn:aws:iam::', !Ref AWS::AccountId, ':user/', !Ref CurrentUserName ]]
             Action: 'kms:*'
             Resource: '*'
           - Sid: Allow administration of the key
             Effect: Allow
             Principal:
-              AWS: !GetAtt [ CodeBuildAccessRole, Arn ]
+              AWS: !Join ['', [ 'arn:aws:iam::', !Ref AWS::AccountId, ':user/', !Ref CurrentUserName ]]
             Action:
               - 'kms:Create*'
               - 'kms:Describe*'
@@ -187,8 +219,13 @@ Resources:
           - Sid: Allow use of the key
             Effect: Allow
             Principal:
-              AWS: !GetAtt [ CodeBuildAccessRole, Arn ]
+              AWS: !Join ['', [ 'arn:aws:iam::', !Ref AWS::AccountId, ':user/', !Ref CurrentUserName ]]
             Action:
+              - "kms:Encrypt"
+              - "kms:Decrypt"
+              - "kms:ReEncrypt*"
+              - "kms:GenerateDataKey*"
+              - "kms:DescribeKey"
               - 'kms:Sign'
               - 'kms:Verify'
               - 'kms:DescribeKey'
@@ -209,3 +246,31 @@ Resources:
               SSEAlgorithm: AES256
       BucketName: !Sub 'maven-artifacts-${AWS::Region}'
       AccessControl: Private # Default
+
+  ECRImageRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${DockerImageRepoName}-repo
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS: !Join ['', [ 'arn:aws:iam::', !Ref AWS::AccountId, ':user/', !Ref CurrentUserName ]]
+            Action:
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:BatchGetImage"
+              - "ecr:BatchCheckLayerAvailability"
+              - "ecr:PutImage"
+              - "ecr:InitiateLayerUpload"
+              - "ecr:UploadLayerPart"
+              - "ecr:CompleteLayerUpload"
+      Tags:
+        - Key: Owner
+          Value: 'Sachith Dickwella'
+        - Key: Email
+          Value: sachith_prasanna@live.com

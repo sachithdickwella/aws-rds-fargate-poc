@@ -17,7 +17,7 @@ spring:
 
   datasource:
     username: admin
-    password: 1912Fy#727bravo
+    password: 
     tomcat:
       max-age: 20000
       max-active: 20
